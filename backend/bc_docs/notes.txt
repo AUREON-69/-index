@@ -1,0 +1,4 @@
+i will write what i learned here with no structure.
+
+1.ON CONFLICT DO NOTHING:
+ while doing onconflict the problem is that it will update all the rows but thats really bad, so we do an on conflict with where clause and only update the value of the onconflict row has any change and do learn about equalities in sql and refer this if you want to learn more https://www.postgresql.org/docs/current/sql-insert.html

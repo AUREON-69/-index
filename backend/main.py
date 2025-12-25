@@ -1,20 +1,37 @@
+import asyncio
 import email
 import io
 import json
 import logging
+import os
 import sqlite3
 import time
 from calendar import c
 from cmath import e
 from datetime import datetime
+from mimetypes import inited
 from os.path import curdir, pardir
 from sys import intern
 from typing import List, Optional
 
+import asyncpg
 import pandas as pd
-from fastapi import Body, FastAPI, File, HTTPException, Request, UploadFile, logger
+from dotenv import load_dotenv
+from fastapi import (
+    Body,
+    FastAPI,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    logger,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ValidationError
+from tomllib import load
+
+load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -58,7 +75,53 @@ def init_db():
     conn.close()
 
 
+pool: Optional[asyncpg.Pool] = None
+
+
+@app.on_event("startup")
+async def startup():
+    global pool
+    pool = await asyncpg.create_pool(
+        dsn=os.getenv("DB_URL"),
+    )
+    if pool is None:
+        logger.error("Failed to create connection pool.")
+        return
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS students (
+            id SERIAL PRIMARY KEY,
+                    name TEXT,
+                    email TEXT UNIQUE,
+                    phone TEXT,
+                    cgpa REAL,
+                    skills TEXT,
+                    internships TEXT,
+                    projects TEXT,
+                    placed TEXT,
+                    created TEXT
+            )
+        """)
+
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS placements (
+                id SERIAL PRIMARY KEY,
+                student_id INTEGER REFERENCES students(id) on DELETE CASCADE,
+                company TEXT NOT NULL,
+                role TEXT,
+                package INTEGER,
+                description TEXT,
+                placed_date TIMESTAMP DEFAULT NOW()
+            )
+        """)
+
+
 init_db()
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    await pool.close()
 
 
 ## a custom logging fucntion to keep things organized or if we wanted to write custom logs
@@ -107,29 +170,38 @@ def root():
 
 
 @app.get("/students")
-def get_students(search: Optional[str] = None, min_cgpa: Optional[float] = None):
-    conn = sqlite3.connect(DB)
-    conn.row_factory = sqlite3.Row
+async def get_students(
+    search: Optional[str] = None,
+    min_cgpa: Optional[float] = None,
+    limit: int = Query(50, le=100),
+    offset: int = 0,
+    skill: Optional[str] = None,
+):
+    query = "SELECT * FROM students WHERE 1=1"
+    params = []
+    param_count = 1
 
-    query = "SELECT * FROM students"
     if search:
-        query += f" WHERE name LIKE '%{search}%'"
+        query += f"AND name ILIKE ${param_count}"
+        params.append(f"%{search}%")
+        param_count += 1
+
     if min_cgpa:
-        query += f" WHERE cgpa >= {min_cgpa}"
-    if search and min_cgpa:
-        query += f" AND cgpa >= {min_cgpa}"
+        query += f"AND cgpa >= {param_count}"
+        params.append(f"%{min_cgpa}%")
+        param_count += 1
 
-    rows = conn.execute(query).fetchall()
-    conn.close()
+    if skill:
+        query += f"AND skills LIKE ${param_count}"
+        params.append(f"%{skill}%")
+        param_count += 1
 
-    students = []
-    for row in rows:
-        s = dict(row)
-        s["skills"] = json.loads(s["skills"] or "[]")
-        s["internships"] = json.loads(s["internships"] or "[]")
-        s["projects"] = json.loads(s["projects"] or "[]")
-        students.append(s)
-    return students
+    query += f" ORDER BY id LIMIT {param_count} OFFSET {param_count + 1}"
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(query, *params)
+
+    return [dict(row) for row in rows]
 
 
 @app.get("/students/{student_id}")
@@ -371,11 +443,11 @@ async def bulk_upload_csv(file: UploadFile = File(...)):
             )
         )
 
-    sql = """
+    query = """
             INSERT INTO students
                 (name, email, phone, cgpa, skills, internships, projects, placed, created)
             VALUES
-                (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             ON CONFLICT(email) DO UPDATE SET
                 name        = excluded.name,
                 phone       = excluded.phone,
@@ -387,21 +459,21 @@ async def bulk_upload_csv(file: UploadFile = File(...)):
                 created     = excluded.created
             -- only actually update if something changed
             WHERE
-                students.name        IS NOT excluded.name OR
-                students.phone       IS NOT excluded.phone OR
-                students.cgpa        IS NOT excluded.cgpa OR
-                students.skills      IS NOT excluded.skills OR
-                students.internships IS NOT excluded.internships OR
-                students.projects    IS NOT excluded.projects OR
-                students.placed      IS NOT excluded.placed
+                students.name        IS DISTINCT FROM excluded.name OR
+                students.phone       IS DISTINCT FROM  excluded.phone OR
+                students.cgpa        IS DISTINCT FROM  excluded.cgpa OR
+                students.skills      IS DISTINCT FROM  excluded.skills OR
+                students.internships IS DISTINCT FROM  excluded.internships OR
+                students.projects    IS DISTINCT FROM  excluded.projects OR
+                students.placed      IS DISTINCT FROM  excluded.placed
         """
 
-    conn = sqlite3.connect(DB)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    cursor.executemany(sql, params)
-    conn.commit()
-    conn.close()
+    async with pool.acquire() as conn:
+        await conn.executemany(query, params)
+
+    await pool.close()
+
+    return json.dumps({"message": "Students updated successfully"})
 
 
 if __name__ == "__main__":

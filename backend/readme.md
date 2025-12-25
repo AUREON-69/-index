@@ -13,17 +13,22 @@
   - /preview and /upload
   
   or fuck this and lets make it opinionated 
-[] basic frontend(just list + detailed view)
+[x] basic frontend(just list + detailed view)
 [] deploy or just test it locally
 
 ## LATER
 
 [] postgres migration
+  - need to figure out schema
+  - placement table
+  - students table
+  - admin table
 [] auth sys
+  - sweet simple jwt auth 
 [] stats dashboard
 [] pagination
-
-# PARKING LOT(coll asf ideas for later)
+d
+# PARKING LOT(coll asf ideas dor later)
 - matching algo
 - resume parser
 - public profiles
