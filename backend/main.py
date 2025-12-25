@@ -257,18 +257,18 @@ def add_student(data: Student = Body(...)):
 
 @app.put("/students/{student_id}")
 async def update_student(student_id: int, data: Student = Body(...)):
-    async with pool.acquire as conn: 
+    async with pool.acquire() as conn: 
 
         # check if student exists
         student = await conn.fetchrow(
             "SELECT * FROM STUDENTS WHERE id=$1", student_id
         )
-    if not student:
-        raise HTTPException(status_code=404, detail="Student not found")
+        if not student:
+            raise HTTPException(status_code=404, detail="Student not found")
 
-    # update student data
-    await conn.execute(
-        "UPDATE STUDENTS SET name=$1, cgpa=$2, email=$3, phone=$4, skills=$5, internships=$6, projects=$7 WHERE id=$8",
+        # update student data
+        await conn.execute(
+            "UPDATE STUDENTS SET name=$1, cgpa=$2, email=$3, phone=$4, skills=$5, internships=$6, projects=$7 WHERE id=$8",
         
             data.name,
             data.cgpa,
@@ -285,11 +285,11 @@ async def update_student(student_id: int, data: Student = Body(...)):
 
 @app.delete("/students/{student_id}")
 async def delete_student(student_id: int):
-    async with pool.accuire() as conn:
+    async with pool.acquire() as conn:
 
         # check if student exists
         student = await conn.fetchrow(
-            ("SELECT * FROM STUDENTS WHERE id=$1", student_id)
+            "SELECT * FROM STUDENTS WHERE id=$1", student_id
         )
         if not student:
             raise HTTPException(status_code=404, detail="Student not found")
