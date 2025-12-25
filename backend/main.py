@@ -173,11 +173,11 @@ def root():
 async def get_students(
     search: Optional[str] = None,
     min_cgpa: Optional[float] = None,
-    limit: int = Query(50, le=100),
-    offset: int = 0,
+    limit: int = Query(10, le=100),
+    cursor: int = 0,
     skill: Optional[str] = None,
 ):
-    query = "SELECT * FROM students WHERE 1=1"
+    query = f"SELECT * FROM students WHERE id > {cursor}"
     params = []
     param_count = 1
 
@@ -196,8 +196,9 @@ async def get_students(
         params.append(f"%{skill}%")
         param_count += 1
 
-    query += f" ORDER BY id LIMIT {param_count} OFFSET {param_count + 1}"
-
+    query += f"  ORDER BY id LIMIT {limit} "
+    print(query)
+    print(query)
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, *params)
 
