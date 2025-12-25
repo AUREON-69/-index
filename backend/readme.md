@@ -18,7 +18,7 @@
 
 ## LATER
 
-[] postgres migration
+[c] postgres migration
   - need to figure out schema
   - placement table
   - students table
@@ -26,8 +26,8 @@
 [] auth sys
   - sweet simple jwt auth 
 [] stats dashboard
-[] pagination
-d
+[x] pagination
+
 # PARKING LOT(coll asf ideas dor later)
 - matching algo
 - resume parser
