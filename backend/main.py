@@ -11,6 +11,7 @@ from cmath import e
 from datetime import datetime
 from mimetypes import inited
 from os.path import curdir, pardir
+from sqlite3.dbapi2 import paramstyle
 from sys import intern
 from typing import List, Optional
 
@@ -54,27 +55,6 @@ app.add_middleware(
 DB = "students.db"
 
 
-def init_db():
-    conn = sqlite3.connect(DB)
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS students (
-        id INTEGER PRIMARY KEY,
-                   name TEXT,
-                   email TEXT UNIQUE,
-                   phone TEXT,
-                   cgpa REAL,
-                   skills TEXT,
-                   internships TEXT,
-                   projects TEXT,
-                   placed TEXT,
-                   created TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
-
-
 pool: Optional[asyncpg.Pool] = None
 
 
@@ -89,34 +69,32 @@ async def startup():
         return
     async with pool.acquire() as conn:
         await conn.execute("""
-            CREATE TABLE IF NOT EXISTS students (
-            id SERIAL PRIMARY KEY,
-                    name TEXT,
-                    email TEXT UNIQUE,
-                    phone TEXT,
-                    cgpa REAL,
-                    skills TEXT,
-                    internships TEXT,
-                    projects TEXT,
-                    placed TEXT,
-                    created TEXT
-            )
-        """)
+                   CREATE TABLE IF NOT EXISTS students (
+                       id SERIAL PRIMARY KEY,
+                       name TEXT NOT NULL,
+                       email TEXT UNIQUE NOT NULL,
+                       phone TEXT,
+                       cgpa REAL,
+                       skills TEXT,
+                       internships TEXT,
+                       projects TEXT,
+                       placed BOOLEAN DEFAULT FALSE,
+                       created TIMESTAMPTZ DEFAULT NOW()
+                   )
+               """)
 
+        # Placements table (UPDATED with 'role' field)
         await conn.execute("""
-            CREATE TABLE IF NOT EXISTS placements (
-                id SERIAL PRIMARY KEY,
-                student_id INTEGER REFERENCES students(id) on DELETE CASCADE,
-                company TEXT NOT NULL,
-                role TEXT,
-                package INTEGER,
-                description TEXT,
-                placed_date TIMESTAMP DEFAULT NOW()
-            )
-        """)
-
-
-init_db()
+                CREATE TABLE IF NOT EXISTS placements (
+                       id SERIAL PRIMARY KEY,
+                       student_id INTEGER REFERENCES students(id) ON DELETE CASCADE,
+                       company TEXT NOT NULL,
+                       role TEXT,  -- Add this field!
+                       package INTEGER,
+                       status TEXT CHECK (status IN ('applied', 'interview', 'offered', 'joined', 'rejected')) DEFAULT 'applied',
+                       placed_date TIMESTAMPTZ DEFAULT NOW()
+                   )
+            """)
 
 
 @app.on_event("shutdown")
@@ -184,39 +162,51 @@ async def get_students(
     cursor: int = 0,
     skill: Optional[str] = None,
 ):
-    query = f"SELECT * FROM students WHERE id > {cursor}"
-    params = []
+    query = f"SELECT * FROM students WHERE id > {cursor} "
     param_count = 1
+    params = []
+    print(params)
 
     if search:
         query += f"AND name ILIKE ${param_count}"
         params.append(f"%{search}%")
         param_count += 1
-
     if min_cgpa:
-        query += f"AND cgpa >= {param_count}"
-        params.append(f"%{min_cgpa}%")
+        query += f"AND cgpa >= ${param_count}"
+        params.append(float(min_cgpa))
         param_count += 1
 
     if skill:
-        query += f"AND skills LIKE ${param_count}"
+        query += f" AND skills LIKE ${param_count}"
         params.append(f"%{skill}%")
         param_count += 1
 
     query += f"  ORDER BY id LIMIT {limit} "
     print(query)
-    print(query)
+    print(params)
     async with pool.acquire() as conn:
-        rows = await conn.fetch(query, *params)
+        if search or skill or min_cgpa:
+            rows = await conn.fetch(query, *params)
+        else:
+            rows = await conn.fetch(query)
 
-    return [dict(row) for row in rows]
+    print("query", query)
+    students = []
+    for row in rows:
+        student = dict(row)
+        student["skills"] = json.loads(student["skills"] or "[]")
+        student["internships"] = json.loads(student["internships"] or "[]")
+        student["projects"] = json.loads(student["projects"] or "[]")
+        student["placed"] = student["placed"] == "true"  # Convert to boolean
+        students.append(student)
+
+    return students
 
 
 @app.get("/students/{student_id}")
-def get_student_by_id(student_id: int):
-    conn = sqlite3.connect(DB)
-    conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT * FROM STUDENTS WHERE id=?", (student_id,)).fetchone()
+async def get_student_by_id(student_id: int):
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM STUDENTS WHERE id=?", (student_id,))
 
     if row:
         student = dict(row)
@@ -264,6 +254,7 @@ def add_student(data: Student = Body(...)):
 
 @app.put("/students/{student_id}")
 async def update_student(student_id: int, data: Student = Body(...)):
+<<<<<<< HEAD
     async with pool.acquire() as conn: 
 
         # check if student exists
@@ -272,6 +263,13 @@ async def update_student(student_id: int, data: Student = Body(...)):
         )
         if not student:
             raise HTTPException(status_code=404, detail="Student not found")
+=======
+    async with pool.acquire as conn:
+        # check if student exists
+        student = await conn.fetchrow("SELECT * FROM STUDENTS WHERE id=$1", student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+>>>>>>> upstream/main
 
         # update student data
         await conn.execute(
@@ -285,15 +283,26 @@ async def update_student(student_id: int, data: Student = Body(...)):
             json.dumps(data.internships),
             json.dumps([p.dict() for p in (data.projects or [])]),
             student_id,
+<<<<<<< HEAD
         )
     
     return 
+=======
+        ),
+    )
+
+    return
+>>>>>>> upstream/main
 
 
 @app.delete("/students/{student_id}")
 async def delete_student(student_id: int):
+<<<<<<< HEAD
     async with pool.acquire() as conn:
 
+=======
+    async with pool.accuire() as conn:
+>>>>>>> upstream/main
         # check if student exists
         student = await conn.fetchrow(
             "SELECT * FROM STUDENTS WHERE id=$1", student_id
@@ -489,7 +498,7 @@ async def bulk_upload_csv(file: UploadFile = File(...)):
         skills_json = json.dumps(s.skills or [])
         internships_json = json.dumps(s.internships or [])
         projects_json = json.dumps(s.projects or [])
-        placed_text = None if s.placed is None else ("true" if s.placed else "false")
+        placed_text = s.placed
 
         params.append(
             (
@@ -501,15 +510,14 @@ async def bulk_upload_csv(file: UploadFile = File(...)):
                 internships_json,
                 projects_json,
                 placed_text,
-                datetime.utcnow().isoformat(),
             )
         )
 
     query = """
             INSERT INTO students
-                (name, email, phone, cgpa, skills, internships, projects, placed, created)
+                (name, email, phone, cgpa, skills, internships, projects, placed)
             VALUES
-                ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                ($1, $2, $3, $4, $5, $6, $7, $8)
             ON CONFLICT(email) DO UPDATE SET
                 name        = excluded.name,
                 phone       = excluded.phone,
@@ -517,8 +525,7 @@ async def bulk_upload_csv(file: UploadFile = File(...)):
                 skills      = excluded.skills,
                 internships = excluded.internships,
                 projects    = excluded.projects,
-                placed      = excluded.placed,
-                created     = excluded.created
+                placed      = excluded.placed
             -- only actually update if something changed
             WHERE
                 students.name        IS DISTINCT FROM excluded.name OR
@@ -536,6 +543,77 @@ async def bulk_upload_csv(file: UploadFile = File(...)):
     await pool.close()
 
     return json.dumps({"message": "Students updated successfully"})
+
+
+@app.get("/stats")
+async def get_stats():
+    async with pool.acquire() as conn:
+        # Basic stats
+        total_students = await conn.fetchval("SELECT COUNT(*) FROM students")
+        placed_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM students WHERE placed = TRUE"
+        )
+        avg_cgpa = await conn.fetchval(
+            "SELECT AVG(cgpa) FROM students WHERE cgpa IS NOT NULL"
+        )
+
+        # Placement stats
+        avg_package = await conn.fetchval("""
+            SELECT AVG(package)
+            FROM placements
+            WHERE status = 'joined' AND package IS NOT NULL
+        """)
+
+        # Top companies
+        top_companies = await conn.fetch("""
+            SELECT
+                company as name,
+                COUNT(*) as count,
+                AVG(package) as avg_package
+            FROM placements
+            WHERE status = 'joined'
+            GROUP BY company
+            ORDER BY count DESC
+            LIMIT 10
+        """)
+
+        # Skill demand (count students with each skill)
+        # Note: Since skills is TEXT (JSON string), we need to parse it
+        skill_rows = await conn.fetch("""
+            SELECT skills FROM students WHERE skills IS NOT NULL
+        """)
+
+        skill_demand = {}
+        for row in skill_rows:
+            skills = json.loads(row["skills"] or "[]")
+            for skill in skills:
+                skill = skill.strip()
+                if skill:
+                    skill_demand[skill] = skill_demand.get(skill, 0) + 1
+
+        # Sort by count and take top 10
+        top_skills = dict(
+            sorted(skill_demand.items(), key=lambda x: x[1], reverse=True)[:10]
+        )
+
+    return {
+        "total_students": total_students,
+        "placed_count": placed_count,
+        "placement_rate": round(placed_count / total_students * 100, 1)
+        if total_students > 0
+        else 0,
+        "avg_cgpa": round(avg_cgpa, 2) if avg_cgpa else 0,
+        "avg_package": int(avg_package) if avg_package else 0,
+        "top_companies": [
+            {
+                "name": row["name"],
+                "count": row["count"],
+                "avg_package": int(row["avg_package"]) if row["avg_package"] else 0,
+            }
+            for row in top_companies
+        ],
+        "skill_demand": top_skills,
+    }
 
 
 if __name__ == "__main__":
