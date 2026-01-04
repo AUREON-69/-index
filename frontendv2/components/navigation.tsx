@@ -71,7 +71,9 @@ export function Navigation({
             >
               <DropdownMenuItem className="h-11 cursor-pointer gap-3">
                 <User className="h-5 w-5 text-muted-foreground" />
-                <span className="text-base">Your Profile</span>
+                <Link href="/profile" className="text-base">
+                  Your Profile
+                </Link>
               </DropdownMenuItem>
               <DropdownMenuItem className="h-11 cursor-pointer gap-3">
                 <Settings className="h-5 w-5 text-muted-foreground" />

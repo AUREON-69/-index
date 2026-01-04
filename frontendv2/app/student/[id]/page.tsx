@@ -259,6 +259,13 @@ export default function StudentProfile({
                       <h4 className="font-bold mb-1">
                         {project.title || `Project ${i + 1}`}
                       </h4>
+                      <a
+                        href={project.link}
+                        target="_blank"
+                        className="text-primary font-bold underline"
+                      >
+                        {project.link}
+                      </a>
                       <p className="text-sm text-muted-foreground">
                         {project.description || "Full Stack Development"}
                       </p>

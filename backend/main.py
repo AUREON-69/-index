@@ -211,6 +211,40 @@ async def get_student_by_id(student_id: int):
         raise HTTPException(status_code=404, detail="Student not found")
 
 
+@app.put("/students/{student_id}")
+async def update_student(student_id: int, data: Student = Body(...)):
+    async with pool.acquire() as conn:
+        student = await conn.fetchrow("SELECT id FROM students WHERE id=$1", student_id)
+        if not student:
+            raise HTTPException(status_code=404, detail="Student not found")
+
+        await conn.execute(
+            """
+            UPDATE students SET
+                name = $1,
+                email = $2,
+                phone = $3,
+                cgpa = $4,
+                skills = $5,
+                internships = $6,
+                projects = $7,
+                placed = $8
+            WHERE id = $9
+            """,
+            data.name,
+            data.email,
+            data.phone,
+            data.cgpa,
+            json.dumps(data.skills or []),
+            json.dumps(data.internships or []),
+            json.dumps([p.dict() for p in (data.projects or [])]),
+            data.placed,
+            student_id,
+        )
+
+    return {"status": "updated"}
+
+
 @app.post("/students")
 def add_student(data: Student = Body(...)):
     conn = sqlite3.connect(DB)
