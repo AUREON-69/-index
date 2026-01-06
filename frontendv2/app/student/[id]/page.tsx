@@ -15,9 +15,9 @@ import {
 import Link from "next/link";
 import {
   studentsApi,
-  placementsApi,
+  placementDrivesApi,
   type Student,
-  type Placement,
+  type PlacementDrive,
 } from "@/lib/api";
 
 export default function StudentProfile({
@@ -27,7 +27,6 @@ export default function StudentProfile({
 }) {
   const resolvedParams = React.use(params);
   const [student, setStudent] = React.useState<Student | null>(null);
-  const [placements, setPlacements] = React.useState<Placement[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
 
@@ -41,13 +40,9 @@ export default function StudentProfile({
 
     try {
       const studentId = parseInt(resolvedParams.id);
-      const [studentData, placementsData] = await Promise.all([
-        studentsApi.getById(studentId),
-        placementsApi.getByStudent(studentId).catch(() => []), // Placements optional
-      ]);
+      const studentData = await studentsApi.getById(studentId);
 
       setStudent(studentData);
-      setPlacements(placementsData);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load student");
     } finally {
@@ -104,7 +99,7 @@ export default function StudentProfile({
   }
 
   // Get the latest placement
-  const latestPlacement = placements.find((p) => p.status === "joined");
+  const latestPlacement = "yes";
 
   return (
     <div className="min-h-screen bg-background">
@@ -147,7 +142,7 @@ export default function StudentProfile({
               </div>
             </div>
 
-            {student.placed && latestPlacement && (
+            {student.placed && (
               <div className="bg-secondary text-secondary-foreground px-6 py-5 rounded-xl border-2 border-foreground shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
                 <div className="flex items-center gap-2 mb-1">
                   <Award className="h-5 w-5" />
@@ -155,10 +150,6 @@ export default function StudentProfile({
                     Placed
                   </span>
                 </div>
-                <p className="font-bold">
-                  {latestPlacement.company} • ₹
-                  {(latestPlacement.package / 100000).toFixed(1)}L
-                </p>
               </div>
             )}
           </div>
@@ -166,57 +157,6 @@ export default function StudentProfile({
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="lg:col-span-2 space-y-8">
-            {/* Placements Section */}
-            {placements.length > 0 && (
-              <section className="bg-white border-2 border-border rounded-2xl p-8">
-                <h2 className="mb-6 flex items-center gap-3">
-                  <Briefcase className="h-8 w-8 text-secondary" />
-                  Placements
-                </h2>
-                <div className="space-y-4">
-                  {placements.map((placement) => (
-                    <div
-                      key={placement.id}
-                      className="flex justify-between items-start p-4 rounded-xl bg-muted/50 border border-border"
-                    >
-                      <div className="flex gap-4">
-                        <Building2 className="h-6 w-6 text-muted-foreground mt-1" />
-                        <div>
-                          <h4 className="font-black text-xl">
-                            {placement.company}
-                          </h4>
-                          <p className="text-muted-foreground font-bold">
-                            {placement.role || "Software Engineer"}
-                          </p>
-                          <p className="text-sm text-muted-foreground">
-                            {new Date(
-                              placement.placed_date,
-                            ).toLocaleDateString()}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <p className="font-bold text-primary text-lg">
-                          ₹{(placement.package / 100000).toFixed(1)}L
-                        </p>
-                        <span
-                          className={`inline-block px-3 py-1 rounded-full text-xs font-bold ${
-                            placement.status === "joined"
-                              ? "bg-green-100 text-green-700"
-                              : placement.status === "offered"
-                                ? "bg-blue-100 text-blue-700"
-                                : "bg-gray-100 text-gray-700"
-                          }`}
-                        >
-                          {placement.status}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            )}
-
             {/* Internships Section */}
             {student.internships && student.internships.length > 0 && (
               <section className="bg-white border-2 border-border rounded-2xl p-8">
@@ -278,7 +218,7 @@ export default function StudentProfile({
 
           <div className="space-y-8">
             {/* CGPA Section */}
-            {student.cgpa && (
+            {student.final_cgpa && (
               <section className="bg-white border-2 border-border rounded-2xl p-8">
                 <div className="flex items-center gap-2 mb-4">
                   <GraduationCap className="h-5 w-5 text-secondary" />
@@ -288,10 +228,10 @@ export default function StudentProfile({
                 </div>
                 <div className="p-8 bg-primary rounded-xl border-2 border-foreground shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] text-center">
                   <p className="text-6xl font-black">
-                    {student.cgpa.toFixed(2)}
+                    {student.final_cgpa.toFixed(2)}
                   </p>
                   <p className="font-bold mt-2 uppercase tracking-tighter">
-                    Current CGPA
+                    Final CGPA
                   </p>
                 </div>
               </section>

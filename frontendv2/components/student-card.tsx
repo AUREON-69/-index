@@ -10,7 +10,7 @@ interface Student {
   id: number
   name: string
   email: string
-  cgpa?: number
+  final_cgpa?: number
   skills: string[]
   internships: string[]
   placed: boolean
@@ -44,9 +44,9 @@ export function StudentCard({ student, onClick }: StudentCardProps) {
             <p className="text-[16px] text-muted-foreground">{student.email}</p>
           </div>
           <div className="flex items-center gap-4">
-            {student.cgpa && (
+            {student.final_cgpa && (
               <div className="bg-secondary px-3 py-1 rounded-full text-sm font-semibold border border-border">
-                {student.cgpa.toFixed(2)} CGPA
+                {student.final_cgpa.toFixed(2)} CGPA
               </div>
             )}
             <ArrowRight

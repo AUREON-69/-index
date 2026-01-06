@@ -5,6 +5,7 @@ import { Search, X, ChevronLeft, ChevronRight } from "lucide-react";
 import { Navigation } from "@/components/navigation";
 import { StudentCard } from "@/components/student-card";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { studentsApi, type Student } from "@/lib/api";
 
@@ -106,28 +107,22 @@ export default function StudentsPage() {
             )}
           </div>
 
-          {/* Filter Chips */}
-          <div className="flex flex-wrap gap-4">
-            <FilterChip
-              label="All"
-              isActive={filter === "all"}
-              onClick={() => setFilter("all")}
-            />
-            <FilterChip
-              label="Placed"
-              isActive={filter === "placed"}
-              onClick={() => setFilter("placed")}
-            />
-            <FilterChip
-              label="8.5+ CGPA"
-              isActive={filter === "top"}
-              onClick={() => setFilter("top")}
-            />
-            <FilterChip
-              label="Available"
-              isActive={filter === "available"}
-              onClick={() => setFilter("available")}
-            />
+          {/* Filter Dropdown */}
+          <div className="flex flex-wrap gap-4 items-center">
+            <div className="text-[18px] font-medium text-foreground">Filter:</div>
+            <div className="w-64">
+              <Select value={filter} onValueChange={(value: "all" | "placed" | "top" | "available") => setFilter(value)}>
+                <SelectTrigger className="h-[44px] text-[16px]">
+                  <SelectValue placeholder="Select filter" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Students</SelectItem>
+                  <SelectItem value="placed">Placed Students</SelectItem>
+                  <SelectItem value="top">Top Students (8.5+ CGPA)</SelectItem>
+                  <SelectItem value="available">Available for Placement</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
 
           {/* Loading State */}
@@ -250,26 +245,4 @@ export default function StudentsPage() {
   );
 }
 
-function FilterChip({
-  label,
-  isActive,
-  onClick,
-}: {
-  label: string;
-  isActive: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={cn(
-        "h-[44px] px-8 rounded-lg text-[16px] font-semibold transition-all border",
-        isActive
-          ? "bg-primary text-white border-primary"
-          : "bg-white text-muted-foreground border-border hover:border-primary hover:text-primary",
-      )}
-    >
-      {label}
-    </button>
-  );
-}
+

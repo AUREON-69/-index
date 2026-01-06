@@ -28,22 +28,28 @@ export interface Student {
   name: string;
   email: string;
   phone?: string;
-  cgpa?: number;
+  final_cgpa?: number; // This will be computed from semester CGPAs
   skills: string[];
   internships: string[];
   projects: any[];
   placed: boolean;
+  bio?: string;
   created: string;
 }
 
-export interface Placement {
+export interface SemesterCGPA {
+  semester: string;
+  cgpa: number;
+}
+
+export interface PlacementDrive {
   id: number;
-  student_id: number;
   company: string;
-  role: string;
-  package: number;
-  status: "applied" | "interview" | "offered" | "joined" | "rejected";
-  placed_date: string;
+  status: "ongoing" | "completed" | "starting_soon";
+  start_date?: string;
+  end_date?: string;
+  package?: number;
+  description?: string;
 }
 
 export interface Stats {
@@ -95,33 +101,56 @@ export const studentsApi = {
     }),
 };
 
-// Placements API
-export const placementsApi = {
-  getAll: (params?: { company?: string; status?: string }) => {
+// Placement Drives API
+export const placementDrivesApi = {
+  getAll: (params?: { company?: string; status?: string; limit?: number; cursor?: number }) => {
     const query = new URLSearchParams();
     if (params?.company) query.set("company", params.company);
     if (params?.status) query.set("status", params.status);
+    if (params?.limit) query.set("limit", params.limit.toString());
+    if (params?.cursor) query.set("cursor", params.cursor.toString());
 
-    return apiFetch<Placement[]>(`/placements?${query.toString()}`);
+    return apiFetch<PlacementDrive[]>(`/placements?${query.toString()}`);
   },
 
-  getByStudent: (studentId: number) =>
-    apiFetch<Placement[]>(`/students/${studentId}/placements`),
+  getById: (id: number) => apiFetch<PlacementDrive>(`/placements/${id}`),
 
-  create: (data: Omit<Placement, "id" | "placed_date">) =>
-    apiFetch<{ id: number; placed_date: string }>("/placements", {
+  create: (data: Omit<PlacementDrive, "id">) =>
+    apiFetch<{ id: number; status: string }>(`/placements`, {
       method: "POST",
       body: JSON.stringify(data),
     }),
 
-  updateStatus: (id: number, status: Placement["status"]) =>
+  update: (id: number, data: Partial<PlacementDrive>) =>
     apiFetch<{ status: string }>(`/placements/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ status }),
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+
+  delete: (id: number) =>
+    apiFetch<{ status: string }>(`/placements/${id}`, {
+      method: "DELETE",
     }),
 };
 
 // Stats API
 export const statsApi = {
   get: () => apiFetch<Stats>("/stats"),
+};
+
+// Semester CGPA API
+export const semesterCGPA = {
+  getAll: (studentId: number) => 
+    apiFetch<SemesterCGPA[]>(`/students/${studentId}/cgpa`),
+
+  add: (studentId: number, data: SemesterCGPA) =>
+    apiFetch<{ status: string; student_id: number; semester: string; cgpa: number }>(`/students/${studentId}/cgpa`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  delete: (studentId: number, semester: string) =>
+    apiFetch<{ status: string; student_id: number; semester: string }>(`/students/${studentId}/cgpa/${semester}`, {
+      method: "DELETE",
+    }),
 };

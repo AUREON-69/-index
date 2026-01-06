@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { studentsApi, type Student } from "@/lib/api";
+import { studentsApi, semesterCGPA, type Student, type SemesterCGPA } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -9,11 +9,26 @@ export default function ProfilePage() {
   const STUDENT_ID = 1; // later: from auth
 
   const [student, setStudent] = useState<Student | null>(null);
+  const [semesterCgpaList, setSemesterCgpaList] = useState<SemesterCGPA[]>([]);
   const [saving, setSaving] = useState(false);
+  const [newSemester, setNewSemester] = useState("");
+  const [newCgpa, setNewCgpa] = useState("");
+  const [cgpaLoading, setCgpaLoading] = useState(false);
 
   useEffect(() => {
     studentsApi.getById(STUDENT_ID).then(setStudent);
+    // Load existing semester CGPAs
+    loadSemesterCgpa();
   }, []);
+
+  const loadSemesterCgpa = async () => {
+    try {
+      const data = await semesterCGPA.getAll(STUDENT_ID);
+      setSemesterCgpaList(data);
+    } catch (error) {
+      console.error("Failed to load semester CGPAs:", error);
+    }
+  };
 
   if (!student) return <div>Loading...</div>;
 
@@ -25,6 +40,35 @@ export default function ProfilePage() {
     setSaving(true);
     await studentsApi.update(student.id, student);
     setSaving(false);
+  };
+
+  const addSemesterCgpa = async () => {
+    if (!newSemester || !newCgpa) return;
+
+    setCgpaLoading(true);
+    try {
+      await semesterCGPA.add(STUDENT_ID, {
+        semester: newSemester,
+        cgpa: parseFloat(newCgpa),
+      });
+      // Reload the CGPA list
+      loadSemesterCgpa();
+      setNewSemester("");
+      setNewCgpa("");
+    } catch (error) {
+      console.error("Failed to add semester CGPA:", error);
+    }
+    setCgpaLoading(false);
+  };
+
+  const removeSemesterCgpa = async (semester: string) => {
+    try {
+      await semesterCGPA.delete(STUDENT_ID, semester);
+      // Reload the CGPA list
+      loadSemesterCgpa();
+    } catch (error) {
+      console.error("Failed to remove semester CGPA:", error);
+    }
   };
 
   return (
@@ -57,6 +101,66 @@ export default function ProfilePage() {
           value={student.phone || ""}
           onChange={(e) => updateField("phone", e.target.value)}
           placeholder="Phone"
+        />
+
+        {/* Display computed final CGPA */}
+        <div className="border-2 border-border rounded-xl p-4 mb-4">
+          <h3 className="font-semibold mb-2">Computed Final CGPA</h3>
+          <p className="text-2xl font-bold text-center">{student.final_cgpa?.toFixed(2) || "Not calculated"}</p>
+        </div>
+
+        {/* Semester CGPA Section */}
+        <div className="space-y-4">
+          <h3 className="font-semibold">Semester CGPA</h3>
+          
+          {/* Existing semester CGPAs */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {semesterCgpaList.map((item, index) => (
+              <div key={index} className="flex justify-between items-center p-3 bg-muted rounded-md">
+                <div>
+                  <span className="font-medium">{item.semester}:</span> 
+                  <span className="ml-2 font-bold">{item.cgpa.toFixed(2)}</span>
+                </div>
+                <Button 
+                  variant="destructive" 
+                  size="sm"
+                  onClick={() => removeSemesterCgpa(item.semester)}
+                >
+                  Remove
+                </Button>
+              </div>
+            ))}
+          </div>
+          
+          {/* Add new semester CGPA */}
+          <div className="flex gap-2 mt-4">
+            <Input
+              value={newSemester}
+              onChange={(e) => setNewSemester(e.target.value)}
+              placeholder="Semester (e.g. '1', '2', 'Fall 2023')"
+            />
+            <Input
+              type="number"
+              step="0.01"
+              min="0"
+              max="10"
+              value={newCgpa}
+              onChange={(e) => setNewCgpa(e.target.value)}
+              placeholder="CGPA (0.00 - 10.00)"
+            />
+            <Button 
+              onClick={addSemesterCgpa} 
+              disabled={cgpaLoading || !newSemester || !newCgpa}
+            >
+              {cgpaLoading ? "Adding..." : "Add"}
+            </Button>
+          </div>
+        </div>
+
+        <Input
+          value={student.bio || ""}
+          onChange={(e) => updateField("bio", e.target.value)}
+          placeholder="Short bio about yourself"
         />
       </section>
 

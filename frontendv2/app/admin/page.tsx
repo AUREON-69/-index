@@ -10,14 +10,12 @@ import {
   CheckCircle2,
   Award,
 } from "lucide-react";
-import { statsApi, placementsApi, type Stats, type Placement } from "@/lib/api";
+import { statsApi, placementDrivesApi, type Stats, type PlacementDrive } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 export default function AdminDashboard() {
   const [stats, setStats] = React.useState<Stats | null>(null);
-  const [recentPlacements, setRecentPlacements] = React.useState<Placement[]>(
-    [],
-  );
+  const [placementDrives, setPlacementDrives] = React.useState<PlacementDrive[]>([]);
   const [loading, setLoading] = React.useState(true);
 
   React.useEffect(() => {
@@ -26,13 +24,13 @@ export default function AdminDashboard() {
 
   const fetchDashboardData = async () => {
     try {
-      const [statsData, placementsData] = await Promise.all([
+      const [statsData, placementDrivesData] = await Promise.all([
         statsApi.get(),
-        placementsApi.getAll({ status: "joined" }),
+        placementDrivesApi.getAll({ status: "completed" }),
       ]);
 
       setStats(statsData);
-      setRecentPlacements(placementsData.slice(0, 5)); // Latest 5
+      setPlacementDrives(placementDrivesData.slice(0, 5)); // Latest 5
     } catch (error) {
       console.error("Failed to load dashboard:", error);
     } finally {
@@ -107,41 +105,45 @@ export default function AdminDashboard() {
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-12">
-          {/* Recent Placements */}
+          {/* Recent Placement Drives */}
           <section className="border border-border rounded-xl p-8">
             <div className="flex items-center gap-3 mb-6">
               <div className="h-12 w-12 rounded-lg bg-primary/10 flex items-center justify-center">
                 <TrendingUp className="h-6 w-6 text-primary" />
               </div>
               <div>
-                <h2 className="text-[24px] font-bold">Recent Placements</h2>
+                <h2 className="text-[24px] font-bold">Placement Drives</h2>
                 <p className="text-sm text-muted-foreground">
-                  Latest student success stories
+                  Recent placement activities
                 </p>
               </div>
             </div>
 
             <div className="space-y-4">
-              {recentPlacements.map((placement) => (
+              {placementDrives.map((drive) => (
                 <div
-                  key={placement.id}
+                  key={drive.id}
                   className="flex justify-between items-start p-4 border border-border rounded-lg"
                 >
                   <div>
                     <p className="font-semibold text-[16px]">
-                      Student #{placement.student_id}
+                      {drive.company}
                     </p>
-                    <p className="text-sm text-muted-foreground">
-                      {placement.company}
+                    <p className="text-sm text-muted-foreground capitalize">
+                      {drive.status.replace('_', ' ')}
                     </p>
                   </div>
                   <div className="text-right">
-                    <p className="font-bold text-primary">
-                      ₹{(placement.package / 100000).toFixed(1)}L
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      {new Date(placement.placed_date).toLocaleDateString()}
-                    </p>
+                    {drive.package && (
+                      <p className="font-bold text-primary">
+                        ₹{(drive.package / 100000).toFixed(1)}L
+                      </p>
+                    )}
+                    {drive.start_date && (
+                      <p className="text-xs text-muted-foreground">
+                        {new Date(drive.start_date).toLocaleDateString()}
+                      </p>
+                    )}
                   </div>
                 </div>
               ))}

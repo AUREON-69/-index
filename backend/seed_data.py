@@ -62,18 +62,19 @@ def random_bool():
 with open("students_500.csv", "w", newline="") as f:
     writer = csv.writer(f)
     writer.writerow(
-        ["name", "email", "phone", "cgpa", "skills", "internships", "placed"]
+        ["name", "email", "phone", "final_cgpa", "skills", "internships", "placed", "bio"]
     )
 
     for _ in range(500):
         name = fake.name()
         email = fake.email()
         phone = fake.phone_number().replace(" ", "").replace("-", "")
-        cgpa = random_cgpa()
+        final_cgpa = random_cgpa()
         skills = random_skills()
         internship = random_internship()
         placed = random_bool()
+        bio = fake.text(max_nb_chars=200)  # Add a short bio
 
-        writer.writerow([name, email, phone, cgpa, skills, internship, placed])
+        writer.writerow([name, email, phone, final_cgpa, skills, internship, placed, bio])
 
 print("Generated students_500.csv successfully.")
