@@ -223,6 +223,13 @@ class Student(BaseModel):
     bio: Optional[str] = None
 
 
+class Placement(BaseModel):
+    student_id: int
+    company: str
+    role: str
+    package: int
+
+
 ##reponse time logger
 @app.middleware("http")
 async def response_time_logger(request: Request, call_next):
@@ -620,6 +627,67 @@ async def delete_placement(placement_id: int):
 
     return {"status": "deleted"}
 
+
+#Placement endpoints
+
+@app.get("/placements")
+async def get_placements(
+    limit: int = Query(10, le=100),
+    cursor: int = 0
+):
+    query = "SELECT * FROM PLACEMENTS WHERE id > $1 ORDER BY id LIMIT $2" 
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(query, cursor, limit)
+    #converts to dictionaries
+    return [dict(row) for row in rows]
+
+@app.post("/placements")
+async def add_placements(data: Placement = Body(...)):
+    query = "INSERT INTO placements (student_id, company, role, package) VALUES ($1, $2, $3, $4) RETURNING id"
+    async with pool.acquire() as conn:
+        placement_id = await conn.fetchval(
+            query,
+            data.student_id,
+            data.company,
+            data.role,
+            data.package
+        )
+    return {"message": "Placement created", "id": placement_id}
+
+@app.put("/placements/{placement_id}")
+async def update_placement(placement_id: int, data: Placement = Body(...)):
+    async with pool.acquire() as conn:
+
+        exists = await conn.fetchval(
+            "SELECT id FROM PLACEMENTS WHERE id=$1", placement_id
+        )
+        if not exists:
+            raise HTTPException(status_code=404, detail="Placement not found")
+        
+        #Update
+        await conn.execute(
+            "UPDATE PLACEMENTS SET student_id=$1, company=$2, role=$3, package=$4 WHERE id=$5",
+            
+                data.student_id,
+                data.company,
+                data.role,
+                data.package,
+                placement_id,
+            
+        )
+    return {"message": "Placement updated"}
+
+@app.delete("/placements/{placement_id}")
+async def delete_placement(placement_id: int):
+    async with pool.acquire() as conn:
+        exist = await conn.fetchval("SELECT id FROM PLACEMENTS WHERE id=$1", placement_id)
+        if not exist:
+            raise HTTPException(status_code=404, detail="Placement not found")
+        
+        #Delete
+        await conn.execute("DELETE FROM PLACEMENTS WHERE id=$1", placement_id)
+
+    return {"status": "deleted"}
 
 def parse_row(row: pd.Series) -> dict:
     name = str(row.get("name", "")).strip()
