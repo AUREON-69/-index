@@ -1,18 +1,10 @@
 import asyncio
-import email
 import io
 import json
 import logging
 import os
-import sqlite3
 import time
-from calendar import c
-from cmath import e
-from datetime import datetime
-from mimetypes import inited
-from os.path import curdir, pardir
-from sqlite3.dbapi2 import paramstyle
-from sys import intern
+from datetime import datetime, timedelta
 from typing import List, Optional
 
 import asyncpg
@@ -20,19 +12,30 @@ import pandas as pd
 from dotenv import load_dotenv
 from fastapi import (
     Body,
+    Depends,
     FastAPI,
     File,
     HTTPException,
     Query,
     Request,
     UploadFile,
-    logger,
+    status,
 )
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jose import JWTError, jwt
+from passlib.context import CryptContext
 from pydantic import BaseModel, ValidationError, validator
-from tomllib import load
 
 load_dotenv()
+
+# JWT Configuration
+SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-this-in-production")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+security = HTTPBearer()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,133 +55,72 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-DB = "students.db"
-
-
 pool: Optional[asyncpg.Pool] = None
 
 
 @app.on_event("startup")
 async def startup():
     global pool
-    pool = await asyncpg.create_pool(
-        dsn=os.getenv("DB_URL"),
-    )
+    pool = await asyncpg.create_pool(dsn=os.getenv("DB_URL"))
     if pool is None:
         logger.error("Failed to create connection pool.")
         return
+
     async with pool.acquire() as conn:
-        # Check if table exists and migrate if needed
-        table_exists = await conn.fetchval("""
-            SELECT EXISTS (
-                SELECT FROM information_schema.tables
-                WHERE table_name = 'students'
-            )
-        """)
-
-        if not table_exists:
-            await conn.execute("""
-                       CREATE TABLE students (
-                           id SERIAL PRIMARY KEY,
-                           name TEXT NOT NULL,
-                           email TEXT UNIQUE NOT NULL,
-                           phone TEXT,
-                           final_cgpa REAL,
-                           skills TEXT,
-                           internships TEXT,
-                           projects TEXT,
-                           placed BOOLEAN DEFAULT FALSE,
-                           bio TEXT,
-                           created TIMESTAMPTZ DEFAULT NOW()
-                       )
-                   """)
-        else:
-            # Check if final_cgpa column exists, if not, add it
-            final_cgpa_exists = await conn.fetchval("""
-                SELECT EXISTS (
-                    SELECT FROM information_schema.columns
-                    WHERE table_name = 'students' AND column_name = 'final_cgpa'
-                )
-            """)
-
-            if not final_cgpa_exists:
-                await conn.execute("ALTER TABLE students ADD COLUMN final_cgpa REAL")
-
-            # Check if bio column exists, if not, add it
-            bio_exists = await conn.fetchval("""
-                SELECT EXISTS (
-                    SELECT FROM information_schema.columns
-                    WHERE table_name = 'students' AND column_name = 'bio'
-                )
-            """)
-
-            if not bio_exists:
-                await conn.execute("ALTER TABLE students ADD COLUMN bio TEXT")
-
-        # Create semester_cgpa table if it doesn't exist
-        semester_cgpa_exists = await conn.fetchval("""
-            SELECT EXISTS (
-                SELECT FROM information_schema.tables
-                WHERE table_name = 'semester_cgpa'
-            )
-        """)
-
-        if not semester_cgpa_exists:
-            await conn.execute("""
-                       CREATE TABLE semester_cgpa (
-                           id SERIAL PRIMARY KEY,
-                           student_id INTEGER REFERENCES students(id) ON DELETE CASCADE,
-                           semester TEXT NOT NULL,
-                           cgpa REAL NOT NULL
-                       )
-                   """)
-
-        # Create placement_drives table if it doesn't exist
-        placement_drives_exists = await conn.fetchval("""
-            SELECT EXISTS (
-                SELECT FROM information_schema.tables
-                WHERE table_name = 'placement_drives'
-            )
-        """)
-
-        if not placement_drives_exists:
-            await conn.execute("""
-                    CREATE TABLE placement_drives (
-                           id SERIAL PRIMARY KEY,
-                           company TEXT NOT NULL,
-                           status TEXT CHECK (status IN ('ongoing', 'completed', 'starting_soon')) DEFAULT 'starting_soon',
-                           start_date TIMESTAMPTZ,
-                           end_date TIMESTAMPTZ,
-                           package INTEGER,
-                           description TEXT
-                       )
-                """)
-
-        # Semester CGPA table
+        # Create users table first
         await conn.execute("""
-                   CREATE TABLE IF NOT EXISTS semester_cgpa (
-                       id SERIAL PRIMARY KEY,
-                       student_id INTEGER REFERENCES students(id) ON DELETE CASCADE,
-                       semester TEXT NOT NULL,
-                       cgpa REAL NOT NULL,
-                       UNIQUE (student_id, semester)
-                   )
-               """)
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                email VARCHAR(255) UNIQUE NOT NULL,
+                password_hash VARCHAR(255) NOT NULL,
+                role VARCHAR(50) DEFAULT 'user',
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
 
-        # Placement drives table
+        # Create students table
         await conn.execute("""
-                CREATE TABLE IF NOT EXISTS placement_drives (
-                       id SERIAL PRIMARY KEY,
-                       company TEXT NOT NULL,
-                       status TEXT CHECK (status IN ('ongoing', 'completed', 'starting_soon')) DEFAULT 'starting_soon',
-                       start_date TIMESTAMPTZ,
-                       end_date TIMESTAMPTZ,
-                       package INTEGER,
-                       description TEXT
-                   )
-            """)
+            CREATE TABLE IF NOT EXISTS students (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                email TEXT UNIQUE NOT NULL,
+                phone TEXT,
+                final_cgpa REAL,
+                skills TEXT,
+                internships TEXT,
+                projects TEXT,
+                placed BOOLEAN DEFAULT FALSE,
+                bio TEXT,
+                created TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
 
-        # Create a function to update final_cgpa based on semester CGPAs
+        # Create semester_cgpa table
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS semester_cgpa (
+                id SERIAL PRIMARY KEY,
+                student_id INTEGER REFERENCES students(id) ON DELETE CASCADE,
+                semester TEXT NOT NULL,
+                cgpa REAL NOT NULL,
+                UNIQUE (student_id, semester)
+            )
+        """)
+
+        # Create placement_drives table
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS placement_drives (
+                id SERIAL PRIMARY KEY,
+                company TEXT NOT NULL,
+                status TEXT CHECK (status IN ('ongoing', 'completed', 'starting_soon')) DEFAULT 'starting_soon',
+                start_date TIMESTAMPTZ,
+                end_date TIMESTAMPTZ,
+                package INTEGER,
+                description TEXT
+            )
+        """)
+
+        # Create function to update final_cgpa
         await conn.execute("""
             CREATE OR REPLACE FUNCTION update_student_final_cgpa(student_id_param INTEGER)
             RETURNS VOID AS $$
@@ -199,12 +141,11 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
-    await pool.close()
+    if pool:
+        await pool.close()
 
 
-## a custom logging fucntion to keep things organized or if we wanted to write custom logs
-
-
+# Models
 class Project(BaseModel):
     title: str
     link: str
@@ -223,14 +164,106 @@ class Student(BaseModel):
     bio: Optional[str] = None
 
 
-##reponse time logger
+class UserCreate(BaseModel):
+    email: str
+    password: str
+    name: str
+    phone: Optional[str] = None
+
+
+class UserLogin(BaseModel):
+    email: str
+    password: str
+
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+
+class UserResponse(BaseModel):
+    id: int
+    email: str
+    role: str
+    student_id: Optional[int] = None
+
+
+class PlacementDrive(BaseModel):
+    company: str
+    status: str
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    package: Optional[int] = None
+    description: Optional[str] = None
+
+
+class SemesterCGPA(BaseModel):
+    semester: str
+    cgpa: float
+
+
+# Auth utilities
+def verify_password(plain_password, hashed_password):
+    return pwd_context.verify(plain_password, hashed_password)
+
+
+def get_password_hash(password):
+    return pwd_context.hash(password)
+
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=15))
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    try:
+        payload = jwt.decode(
+            credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM]
+        )
+        email: str = payload.get("sub")
+        if email is None:
+            raise HTTPException(status_code=401, detail="Invalid token")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    async with pool.acquire() as conn:
+        user = await conn.fetchrow(
+            "SELECT id, email, role FROM users WHERE email = $1", email
+        )
+        if user is None:
+            raise HTTPException(status_code=401, detail="User not found")
+
+        # Get student_id if exists
+        student = await conn.fetchrow(
+            "SELECT id FROM students WHERE user_id = $1", user["id"]
+        )
+
+        return {
+            "id": user["id"],
+            "email": user["email"],
+            "role": user["role"],
+            "student_id": student["id"] if student else None,
+        }
+
+
+async def require_admin(current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return current_user
+
+
+# Response time logger
 @app.middleware("http")
 async def response_time_logger(request: Request, call_next):
     start_time = time.time()
     response = await call_next(request)
     duration = time.time() - start_time
 
-    # Color code by speed
     if duration > 1.0:
         logger.warning(f"🐌 SLOW {request.method} {request.url.path}: {duration:.3f}s")
     elif duration > 0.5:
@@ -241,7 +274,108 @@ async def response_time_logger(request: Request, call_next):
     return response
 
 
-# API
+# Auth routes
+@app.post("/auth/register", response_model=Token)
+async def register(user: UserCreate):
+    async with pool.acquire() as conn:
+        # Check if user exists
+        existing = await conn.fetchrow(
+            "SELECT id FROM users WHERE email = $1", user.email
+        )
+        if existing:
+            raise HTTPException(status_code=400, detail="Email already registered")
+
+        # Create user
+        password_hash = get_password_hash(user.password)
+        new_user = await conn.fetchrow(
+            "INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id, email",
+            user.email,
+            password_hash,
+        )
+
+        # Create student profile linked to user
+        await conn.execute(
+            """INSERT INTO students (user_id, name, email, phone, skills, internships, projects)
+               VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+            new_user["id"],
+            user.name,
+            user.email,
+            user.phone,
+            json.dumps([]),
+            json.dumps([]),
+            json.dumps([]),
+        )
+
+        # Create token
+        access_token = create_access_token(
+            data={"sub": new_user["email"]},
+            expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+        )
+
+        return {"access_token": access_token, "token_type": "bearer"}
+
+
+@app.post("/auth/login", response_model=Token)
+async def login(credentials: UserLogin):
+    async with pool.acquire() as conn:
+        user = await conn.fetchrow(
+            "SELECT id, email, password_hash FROM users WHERE email = $1",
+            credentials.email,
+        )
+
+        if not user or not verify_password(credentials.password, user["password_hash"]):
+            raise HTTPException(status_code=400, detail="Invalid credentials")
+
+        access_token = create_access_token(
+            data={"sub": user["email"]},
+            expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+        )
+
+        return {"access_token": access_token, "token_type": "bearer"}
+
+
+@app.get("/auth/me", response_model=UserResponse)
+async def get_me(current_user: dict = Depends(get_current_user)):
+    return current_user
+
+
+@app.post("/auth/logout")
+async def logout():
+    return {"message": "Logged out successfully"}
+
+
+# Admin routes
+@app.post("/admin/make-admin")
+async def make_admin(
+    email: str = Body(..., embed=True), _: dict = Depends(require_admin)
+):
+    async with pool.acquire() as conn:
+        result = await conn.fetchrow(
+            "UPDATE users SET role='admin' WHERE email=$1 RETURNING id, email, role",
+            email,
+        )
+        if not result:
+            raise HTTPException(status_code=404, detail="User not found")
+
+    return {"message": f"User {email} is now an admin", "user": dict(result)}
+
+
+@app.post("/admin/remove-admin")
+async def remove_admin(
+    email: str = Body(..., embed=True), _: dict = Depends(require_admin)
+):
+    async with pool.acquire() as conn:
+        result = await conn.fetchrow(
+            "UPDATE users SET role='user' WHERE email=$1 RETURNING id, email, role",
+            email,
+        )
+        if not result:
+            raise HTTPException(status_code=404, detail="User not found")
+
+    return {"message": f"Admin removed from {email}", "user": dict(result)}
+
+
+# Student routes
 @app.get("/")
 def root():
     return {"status": "live", "version": "0.1"}
@@ -255,33 +389,25 @@ async def get_students(
     cursor: int = 0,
     skill: Optional[str] = None,
 ):
-    # Limit limit parameter to prevent abuse
     limit = min(limit, 100)
-
     query = "SELECT * FROM students WHERE id > $1"
     params = [cursor]
 
     if search:
-        query += " AND name ILIKE $" + str(len(params) + 1)
+        query += f" AND name ILIKE ${len(params) + 1}"
         params.append(f"%{search}%")
     if min_cgpa is not None:
-        query += " AND final_cgpa >= $" + str(len(params) + 1)
+        query += f" AND final_cgpa >= ${len(params) + 1}"
         params.append(float(min_cgpa))
     if skill:
-        query += " AND skills LIKE $" + str(len(params) + 1)
+        query += f" AND skills LIKE ${len(params) + 1}"
         params.append(f"%{skill}%")
 
-    query += " ORDER BY id LIMIT $" + str(len(params) + 1)
+    query += f" ORDER BY id LIMIT ${len(params) + 1}"
     params.append(limit)
 
-    # Execute query with connection retry mechanism
     async with pool.acquire() as conn:
-        try:
-            rows = await conn.fetch(query, *params)
-        except asyncpg.exceptions.InvalidCachedStatementError:
-            # Clear the statement cache and retry
-            await conn.execute("DEALLOCATE ALL")
-            rows = await conn.fetch(query, *params)
+        rows = await conn.fetch(query, *params)
 
     students = []
     for row in rows:
@@ -289,7 +415,6 @@ async def get_students(
         student["skills"] = json.loads(student["skills"] or "[]")
         student["internships"] = json.loads(student["internships"] or "[]")
         student["projects"] = json.loads(student["projects"] or "[]")
-        student["placed"] = student["placed"] == "true"  # Convert to boolean
         students.append(student)
 
     return students
@@ -297,15 +422,8 @@ async def get_students(
 
 @app.get("/students/{student_id}")
 async def get_student_by_id(student_id: int):
-    query = "SELECT * FROM students WHERE id=$1"
-
     async with pool.acquire() as conn:
-        try:
-            row = await conn.fetchrow(query, student_id)
-        except asyncpg.exceptions.InvalidCachedStatementError:
-            # Clear the statement cache and retry
-            await conn.execute("DEALLOCATE ALL")
-            row = await conn.fetchrow(query, student_id)
+        row = await conn.fetchrow("SELECT * FROM students WHERE id=$1", student_id)
 
     if row:
         student = dict(row)
@@ -318,37 +436,26 @@ async def get_student_by_id(student_id: int):
 
 
 @app.put("/students/{student_id}")
-async def update_student(student_id: int, data: Student = Body(...)):
+async def update_student(
+    student_id: int,
+    data: Student = Body(...),
+    current_user: dict = Depends(get_current_user),
+):
     async with pool.acquire() as conn:
-        try:
-            student = await conn.fetchrow(
-                "SELECT id FROM students WHERE id=$1",
-                student_id,
-            )
-        except asyncpg.exceptions.InvalidCachedStatementError:
-            # Clear the statement cache and retry
-            await conn.execute("DEALLOCATE ALL")
-            student = await conn.fetchrow(
-                "SELECT id FROM students WHERE id=$1",
-                student_id,
-            )
+        student = await conn.fetchrow(
+            "SELECT user_id FROM students WHERE id=$1", student_id
+        )
 
         if not student:
             raise HTTPException(status_code=404, detail="Student not found")
 
+        # Only allow user to update their own profile or admin to update any
+        if student["user_id"] != current_user["id"] and current_user["role"] != "admin":
+            raise HTTPException(status_code=403, detail="Not authorized")
+
         await conn.execute(
-            """
-            UPDATE students SET
-                name = $1,
-                email = $2,
-                phone = $3,
-                skills = $4,
-                internships = $5,
-                projects = $6,
-                placed = $7,
-                bio = $8
-            WHERE id = $9
-            """,
+            """UPDATE students SET name=$1, email=$2, phone=$3, skills=$4,
+               internships=$5, projects=$6, placed=$7, bio=$8 WHERE id=$9""",
             data.name,
             data.email,
             data.phone,
@@ -363,158 +470,48 @@ async def update_student(student_id: int, data: Student = Body(...)):
     return {"status": "updated"}
 
 
-@app.post("/students")
-async def add_student(data: Student = Body(...)):
-    async with pool.acquire() as conn:
-        try:
-            # check if student already exists by email
-            student = await conn.fetchrow(
-                "SELECT * FROM students WHERE email=$1", data.email
-            )
-        except asyncpg.exceptions.InvalidCachedStatementError:
-            # Clear the statement cache and retry
-            await conn.execute("DEALLOCATE ALL")
-            student = await conn.fetchrow(
-                "SELECT * FROM students WHERE email=$1", data.email
-            )
-
-        if student:
-            raise HTTPException(
-                status_code=400, detail="Student with this email already exists"
-            )
-
-        # converting projects to json since pythons inbuilt json module cant srealize python objects
-        projects_json = json.dumps([p.dict() for p in (data.projects or [])])
-        # if student doesnt exist lets add them to our db
-        await conn.execute(
-            "INSERT INTO students (name, email, phone, skills, internships, projects, bio) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-            (
-                data.name,
-                data.email,
-                data.phone,
-                json.dumps(data.skills or []),
-                json.dumps(data.internships or []),
-                projects_json,
-                data.bio,
-            ),
-        )
-
-    return {"status": "created"}
-
-
-# This endpoint is duplicate, will be removed as there's already a PUT endpoint above
-# Keeping only the first one with proper implementation
-
-
 @app.delete("/students/{student_id}")
-async def delete_student(student_id: int):
+async def delete_student(student_id: int, _: dict = Depends(require_admin)):
     async with pool.acquire() as conn:
-        try:
-            # check if student exists
-            student = await conn.fetchrow(
-                "SELECT * FROM students WHERE id=$1", student_id
-            )
-        except asyncpg.exceptions.InvalidCachedStatementError:
-            # Clear the statement cache and retry
-            await conn.execute("DEALLOCATE ALL")
-            student = await conn.fetchrow(
-                "SELECT * FROM students WHERE id=$1", student_id
-            )
-
+        student = await conn.fetchrow("SELECT * FROM students WHERE id=$1", student_id)
         if not student:
             raise HTTPException(status_code=404, detail="Student not found")
 
-        # delete student
         await conn.execute("DELETE FROM students WHERE id=$1", student_id)
 
     return {"status": "deleted"}
 
 
-# Placement Drives API
-from typing import Union
-
-from pydantic import Field
-
-
-class PlacementDrive(BaseModel):
-    company: str
-    status: str  # 'ongoing', 'completed', 'starting_soon'
-    start_date: Optional[Union[datetime, str]] = None
-    end_date: Optional[Union[datetime, str]] = None
-    package: Optional[int] = None
-    description: Optional[str] = None
-
-    class Config:
-        json_encoders = {datetime: lambda v: v.isoformat() if v else None}
-
-    @validator("start_date", "end_date", pre=True)
-    def parse_datetime(cls, v):
-        if v is None:
-            return None
-        if isinstance(v, datetime):
-            return v
-        if isinstance(v, str):
-            try:
-                # Try to parse the datetime string
-                return datetime.fromisoformat(v.replace("Z", "+00:00"))
-            except ValueError:
-                try:
-                    # Try parsing with common formats
-                    return datetime.strptime(v, "%Y-%m-%d %H:%M:%S")
-                except ValueError:
-                    return datetime.strptime(v, "%Y-%m-%d")
-        return v
-
-
-from pydantic import validator
-
-
+# Placement routes (admin only for CUD operations)
 @app.get("/placements")
 async def get_placements(
     status: Optional[str] = None,
     limit: int = Query(10, le=100),
     cursor: int = 0,
 ):
-    # Limit limit parameter to prevent abuse
     limit = min(limit, 100)
-
     query = "SELECT * FROM placement_drives WHERE id > $1"
     params = [cursor]
 
     if status:
-        query += " AND status = $" + str(len(params) + 1)
+        query += f" AND status = ${len(params) + 1}"
         params.append(status)
 
-    query += " ORDER BY id LIMIT $" + str(len(params) + 1)
+    query += f" ORDER BY id LIMIT ${len(params) + 1}"
     params.append(limit)
 
     async with pool.acquire() as conn:
-        try:
-            rows = await conn.fetch(query, *params)
-        except asyncpg.exceptions.InvalidCachedStatementError:
-            # Clear the statement cache and retry
-            await conn.execute("DEALLOCATE ALL")
-            rows = await conn.fetch(query, *params)
+        rows = await conn.fetch(query, *params)
 
-    placements = []
-    for row in rows:
-        placement = dict(row)
-        placements.append(placement)
-
-    return placements
+    return [dict(row) for row in rows]
 
 
 @app.get("/placements/{placement_id}")
 async def get_placement_by_id(placement_id: int):
-    query = "SELECT * FROM placement_drives WHERE id=$1"
-
     async with pool.acquire() as conn:
-        try:
-            row = await conn.fetchrow(query, placement_id)
-        except asyncpg.exceptions.InvalidCachedStatementError:
-            # Clear the statement cache and retry
-            await conn.execute("DEALLOCATE ALL")
-            row = await conn.fetchrow(query, placement_id)
+        row = await conn.fetchrow(
+            "SELECT * FROM placement_drives WHERE id=$1", placement_id
+        )
 
     if row:
         return dict(row)
@@ -523,70 +520,40 @@ async def get_placement_by_id(placement_id: int):
 
 
 @app.post("/placements")
-async def create_placement(data: PlacementDrive = Body(...)):
+async def create_placement(
+    data: PlacementDrive = Body(...), _: dict = Depends(require_admin)
+):
     async with pool.acquire() as conn:
-        try:
-            result = await conn.fetchrow(
-                """
-                INSERT INTO placement_drives (company, status, start_date, end_date, package, description)
-                VALUES ($1, $2, $3, $4, $5, $6)
-                RETURNING id
-                """,
-                data.company,
-                data.status,
-                data.start_date,
-                data.end_date,
-                data.package,
-                data.description,
-            )
-        except asyncpg.exceptions.InvalidCachedStatementError:
-            # Clear the statement cache and retry
-            await conn.execute("DEALLOCATE ALL")
-            result = await conn.fetchrow(
-                """
-                INSERT INTO placement_drives (company, status, start_date, end_date, package, description)
-                VALUES ($1, $2, $3, $4, $5, $6)
-                RETURNING id
-                """,
-                data.company,
-                data.status,
-                data.start_date,
-                data.end_date,
-                data.package,
-                data.description,
-            )
+        result = await conn.fetchrow(
+            """INSERT INTO placement_drives (company, status, start_date, end_date, package, description)
+               VALUES ($1, $2, $3, $4, $5, $6) RETURNING id""",
+            data.company,
+            data.status,
+            data.start_date,
+            data.end_date,
+            data.package,
+            data.description,
+        )
 
     return {"id": result["id"], "status": "created"}
 
 
 @app.put("/placements/{placement_id}")
-async def update_placement(placement_id: int, data: PlacementDrive = Body(...)):
+async def update_placement(
+    placement_id: int,
+    data: PlacementDrive = Body(...),
+    _: dict = Depends(require_admin),
+):
     async with pool.acquire() as conn:
-        try:
-            placement = await conn.fetchrow(
-                "SELECT id FROM placement_drives WHERE id=$1", placement_id
-            )
-        except asyncpg.exceptions.InvalidCachedStatementError:
-            # Clear the statement cache and retry
-            await conn.execute("DEALLOCATE ALL")
-            placement = await conn.fetchrow(
-                "SELECT id FROM placement_drives WHERE id=$1", placement_id
-            )
-
+        placement = await conn.fetchrow(
+            "SELECT id FROM placement_drives WHERE id=$1", placement_id
+        )
         if not placement:
             raise HTTPException(status_code=404, detail="Placement drive not found")
 
         await conn.execute(
-            """
-            UPDATE placement_drives SET
-                company = $1,
-                status = $2,
-                start_date = $3,
-                end_date = $4,
-                package = $5,
-                description = $6
-            WHERE id = $7
-            """,
+            """UPDATE placement_drives SET company=$1, status=$2, start_date=$3,
+               end_date=$4, package=$5, description=$6 WHERE id=$7""",
             data.company,
             data.status,
             data.start_date,
@@ -600,19 +567,11 @@ async def update_placement(placement_id: int, data: PlacementDrive = Body(...)):
 
 
 @app.delete("/placements/{placement_id}")
-async def delete_placement(placement_id: int):
+async def delete_placement(placement_id: int, _: dict = Depends(require_admin)):
     async with pool.acquire() as conn:
-        try:
-            placement = await conn.fetchrow(
-                "SELECT * FROM placement_drives WHERE id=$1", placement_id
-            )
-        except asyncpg.exceptions.InvalidCachedStatementError:
-            # Clear the statement cache and retry
-            await conn.execute("DEALLOCATE ALL")
-            placement = await conn.fetchrow(
-                "SELECT * FROM placement_drives WHERE id=$1", placement_id
-            )
-
+        placement = await conn.fetchrow(
+            "SELECT * FROM placement_drives WHERE id=$1", placement_id
+        )
         if not placement:
             raise HTTPException(status_code=404, detail="Placement drive not found")
 
@@ -621,242 +580,107 @@ async def delete_placement(placement_id: int):
     return {"status": "deleted"}
 
 
-def parse_row(row: pd.Series) -> dict:
-    name = str(row.get("name", "")).strip()
-    pemail = str(row.get("email", "")).strip()
-    phone = str(row.get("phone", "")).strip() if pd.notna(row.get("phone")) else None
-    skills = str(row.get("skills", "")).strip()
-    internships = str(row.get("internships", "")).strip()
-    parsed_projects = str(row.get("projects", "")).strip()
-    resume = str(row.get("resume", "")).strip()
-    bio = str(row.get("bio", "")).strip()
+# CGPA routes
+@app.get("/students/{student_id}/cgpa")
+async def get_student_cgpa(student_id: int):
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT semester, cgpa FROM semester_cgpa WHERE student_id=$1 ORDER BY semester",
+            student_id,
+        )
 
-    if not name:
-        raise ValueError("Missing name")
+    return [{"semester": row["semester"], "cgpa": row["cgpa"]} for row in rows]
 
-    if not pemail or "@" not in pemail:
-        print("❌ BAD EMAIL ROW:", row.to_dict() if hasattr(row, "to_dict") else row)
-        raise ValueError("Invalid email")
 
-    final_cgpa_valid: Optional[float] = None
-    final_cgpa_raw = row.get("final_cgpa") or row.get(
-        "cgpa"
-    )  # Support both old and new column names
-    if pd.notna(final_cgpa_raw) and final_cgpa_raw != "":
-        try:
-            final_cgpa_valid = float(final_cgpa_raw)
-        except ValueError:
-            raise ValueError("Invalid CGPA")
+@app.post("/students/{student_id}/cgpa")
+async def add_student_cgpa(
+    student_id: int,
+    data: SemesterCGPA = Body(...),
+    current_user: dict = Depends(get_current_user),
+):
+    async with pool.acquire() as conn:
+        student = await conn.fetchrow(
+            "SELECT user_id FROM students WHERE id=$1", student_id
+        )
+        if not student:
+            raise HTTPException(status_code=404, detail="Student not found")
 
-    placed_raw = row.get("placed")
-    placed: Optional[bool] = None
-    if pd.notna(placed_raw) and placed_raw != "":
-        val = str(placed_raw).strip().lower()
-        if val in ("true", "1", "yes"):
-            placed = True
-        elif val in ("false", "0", "no"):
-            placed = False
-        else:
-            raise ValueError("Invalid placed value")
+        # Only allow user to update their own CGPA or admin
+        if student["user_id"] != current_user["id"] and current_user["role"] != "admin":
+            raise HTTPException(status_code=403, detail="Not authorized")
 
-    project_list = parsed_projects.split(",")
-    skill_list = skills.split(",")
-    internship_list = internships.split(",")
+        await conn.execute(
+            """INSERT INTO semester_cgpa (student_id, semester, cgpa)
+               VALUES ($1, $2, $3)
+               ON CONFLICT (student_id, semester) DO UPDATE SET cgpa=$3""",
+            student_id,
+            data.semester,
+            data.cgpa,
+        )
 
-    if len(project_list) <= 1:
-        project_list = []
+        await conn.execute("SELECT update_student_final_cgpa($1)", student_id)
 
     return {
-        "name": name,
-        "email": pemail,
-        "final_cgpa": final_cgpa_valid,
-        "phone": phone,
-        "skills": skill_list,
-        "internships": internship_list,
-        # project parsing fromm csv is hard not for us but for teachers who are inputting it so lets ditch it and let studetns update it
-        "projects": [],
-        "placed": placed,
-        "resume": resume,
-        "bio": bio,
+        "status": "updated",
+        "student_id": student_id,
+        "semester": data.semester,
+        "cgpa": data.cgpa,
     }
 
 
-def row_to_student(row: pd.Series) -> Student:
-    raw = parse_row(row)
-    # Remove final_cgpa from the raw data since it's no longer part of Student model
-    raw_without_cgpa = {k: v for k, v in raw.items() if k != "final_cgpa"}
-    return Student(**raw_without_cgpa)
-
-
-##upload the csv and stuff only for admin users currently
-@app.post("/admin/upload")
-async def bulk_upload_csv(file: UploadFile = File(...)):
-    # Implement bulk upload logic here
-    REQUIRED_COLUMNS = [
-        "name",
-        "cgpa",
-        "email",
-        "phone",
-        "skills",
-        "internships",
-        "projects",
-    ]
-    OPTIONAL_COLUMNS = ["linkedin", "github", "resume"]
-
-    content = file.file.read()
-    try:
-        decoded = content.decode("utf-8")
-    except UnicodeDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid file format")
-
-    # parse csv
-    try:
-        df = pd.read_csv(io.StringIO(decoded))
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error parsing CSV: {str(e)}")
-
-    # TOOD:
-    # parse the csv iterate over all the columuns and store take it into a list
-    # validate
-    # bulk save to db and use WHERE clause for conflict updates so we dont write the same data to db again and again
-    #
-    # validated = []
-    # for idx, row in df.iterrows():
-    #     try:
-    #         cleaned = parse_row(row)
-    #         validated.append(cleaned)
-    #     except ValueError as e:
-    #         raise HTTPException(
-    #             status_code=400, detail=f"Invalid row at index {idx}: {str(e)}"
-    #         )
-
-    validated_students_list: list[Student] = []
-    errors: list[dict] = []
-    for idx, row in df.iterrows():
-        try:
-            cleaned = row_to_student(row)
-
-            validated_students_list.append(cleaned)
-        except (ValidationError, ValueError) as e:
-            print(f"❌ INVALID ROW {idx}: {e} | email={row.get('email')!r}")
-            errors.append({"row": int(idx), "errors": e})
-
-    params: list[tuple] = []
-    for s in validated_students_list:
-        skills_json = json.dumps(s.skills or [])
-        internships_json = json.dumps(s.internships or [])
-        projects_json = json.dumps(s.projects or [])
-        placed_text = s.placed
-
-        params.append(
-            (
-                s.name,
-                s.email,
-                s.phone,
-                skills_json,
-                internships_json,
-                projects_json,
-                placed_text,
-            )
-        )
-
-    query = """
-            INSERT INTO students
-                (name, email, phone, skills, internships, projects, placed)
-            VALUES
-                ($1, $2, $3, $4, $5, $6, $7)
-            ON CONFLICT(email) DO UPDATE SET
-                name        = excluded.name,
-                phone       = excluded.phone,
-                skills      = excluded.skills,
-                internships = excluded.internships,
-                projects    = excluded.projects,
-                placed      = excluded.placed
-            -- only actually update if something changed
-            WHERE
-                students.name        IS DISTINCT FROM excluded.name OR
-                students.phone       IS DISTINCT FROM  excluded.phone OR
-                students.skills      IS DISTINCT FROM  excluded.skills OR
-                students.internships IS DISTINCT FROM  excluded.internships OR
-                students.projects    IS DISTINCT FROM  excluded.projects OR
-                students.placed      IS DISTINCT FROM  excluded.placed
-        """
-
+@app.delete("/students/{student_id}/cgpa/{semester}")
+async def delete_student_cgpa(
+    student_id: int, semester: str, current_user: dict = Depends(get_current_user)
+):
     async with pool.acquire() as conn:
-        await conn.executemany(query, params)
+        student = await conn.fetchrow(
+            "SELECT user_id FROM students WHERE id=$1", student_id
+        )
+        if not student:
+            raise HTTPException(status_code=404, detail="Student not found")
 
-        # Handle CGPA data if available in the dataframe
-        for idx, row in df.iterrows():
-            try:
-                # Get student ID by email to link to semester CGPA
-                email = str(row.get("email", "")).strip()
-                if email:
-                    student_id = await conn.fetchval(
-                        "SELECT id FROM students WHERE email = $1", email
-                    )
-                    if student_id:
-                        # Handle both 'cgpa' and 'final_cgpa' column names from the CSV
-                        csv_cgpa = row.get("cgpa") or row.get("final_cgpa")
-                        if pd.notna(csv_cgpa) and csv_cgpa != "":
-                            try:
-                                cgpa_value = float(csv_cgpa)
-                                # Insert as semester CGPA (using 'Overall' or 'Final' as the semester name)
-                                await conn.execute(
-                                    "INSERT INTO semester_cgpa (student_id, semester, cgpa) VALUES ($1, $2, $3) "
-                                    "ON CONFLICT (student_id, semester) DO UPDATE SET cgpa = $3",
-                                    student_id,
-                                    "Overall",
-                                    cgpa_value,
-                                )
-                            except ValueError:
-                                print(
-                                    f"Invalid CGPA value {csv_cgpa} for student {email}"
-                                )
-            except Exception as e:
-                print(f"Error processing CGPA for row {idx}: {e}")
+        if student["user_id"] != current_user["id"] and current_user["role"] != "admin":
+            raise HTTPException(status_code=403, detail="Not authorized")
 
-    await pool.close()
+        result = await conn.fetchrow(
+            "DELETE FROM semester_cgpa WHERE student_id=$1 AND semester=$2 RETURNING id",
+            student_id,
+            semester,
+        )
+        if not result:
+            raise HTTPException(
+                status_code=404, detail="Semester CGPA record not found"
+            )
 
-    return json.dumps({"message": "Students updated successfully"})
+        await conn.execute("SELECT update_student_final_cgpa($1)", student_id)
+
+    return {"status": "deleted", "student_id": student_id, "semester": semester}
 
 
+# Stats route
 @app.get("/stats")
 async def get_stats():
     async with pool.acquire() as conn:
-        # Basic stats
         total_students = await conn.fetchval("SELECT COUNT(*) FROM students")
         placed_count = await conn.fetchval(
-            "SELECT COUNT(*) FROM students WHERE placed = TRUE"
+            "SELECT COUNT(*) FROM students WHERE placed=TRUE"
         )
         avg_cgpa = await conn.fetchval(
             "SELECT AVG(final_cgpa) FROM students WHERE final_cgpa IS NOT NULL"
         )
+        avg_package = await conn.fetchval(
+            "SELECT AVG(package) FROM placement_drives WHERE status='completed' AND package IS NOT NULL"
+        )
 
-        # Placement stats (updated to use placement_drives table)
-        avg_package = await conn.fetchval("""
-            SELECT AVG(package)
-            FROM placement_drives
-            WHERE status = 'completed' AND package IS NOT NULL
-        """)
-
-        # Top companies
         top_companies = await conn.fetch("""
-            SELECT
-                company as name,
-                COUNT(*) as count,
-                AVG(package) as avg_package
-            FROM placement_drives
-            WHERE status = 'completed'
-            GROUP BY company
-            ORDER BY count DESC
-            LIMIT 10
+            SELECT company as name, COUNT(*) as count, AVG(package) as avg_package
+            FROM placement_drives WHERE status='completed'
+            GROUP BY company ORDER BY count DESC LIMIT 10
         """)
 
-        # Skill demand (count students with each skill)
-        # Note: Since skills is TEXT (JSON string), we need to parse it
-        skill_rows = await conn.fetch("""
-            SELECT skills FROM students WHERE skills IS NOT NULL
-        """)
+        skill_rows = await conn.fetch(
+            "SELECT skills FROM students WHERE skills IS NOT NULL"
+        )
 
         skill_demand = {}
         for row in skill_rows:
@@ -866,7 +690,6 @@ async def get_stats():
                 if skill:
                     skill_demand[skill] = skill_demand.get(skill, 0) + 1
 
-        # Sort by count and take top 10
         top_skills = dict(
             sorted(skill_demand.items(), key=lambda x: x[1], reverse=True)[:10]
         )
@@ -881,137 +704,106 @@ async def get_stats():
         "avg_package": int(avg_package) if avg_package else 0,
         "top_companies": [
             {
-                "name": row["name"],
-                "count": row["count"],
-                "avg_package": int(row["avg_package"]) if row["avg_package"] else 0,
+                "name": r["name"],
+                "count": r["count"],
+                "avg_package": int(r["avg_package"]) if r["avg_package"] else 0,
             }
-            for row in top_companies
+            for r in top_companies
         ],
         "skill_demand": top_skills,
     }
 
 
-# Semester CGPA API
-class SemesterCGPA(BaseModel):
-    semester: str
-    cgpa: float
+# Bulk upload (admin only)
+@app.post("/admin/upload")
+async def bulk_upload_csv(
+    file: UploadFile = File(...), _: dict = Depends(require_admin)
+):
+    content = await file.read()
+    try:
+        decoded = content.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid file format")
 
+    try:
+        df = pd.read_csv(io.StringIO(decoded))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error parsing CSV: {str(e)}")
 
-@app.get("/students/{student_id}/cgpa")
-async def get_student_cgpa(student_id: int):
-    async with pool.acquire() as conn:
+    params = []
+    for idx, row in df.iterrows():
         try:
-            rows = await conn.fetch(
-                "SELECT semester, cgpa FROM semester_cgpa WHERE student_id = $1 ORDER BY semester",
-                student_id,
+            name = str(row.get("name", "")).strip()
+            email = str(row.get("email", "")).strip()
+            phone = (
+                str(row.get("phone", "")).strip()
+                if pd.notna(row.get("phone"))
+                else None
             )
-        except asyncpg.exceptions.InvalidCachedStatementError:
-            # Clear the statement cache and retry
-            await conn.execute("DEALLOCATE ALL")
-            rows = await conn.fetch(
-                "SELECT semester, cgpa FROM semester_cgpa WHERE student_id = $1 ORDER BY semester",
-                student_id,
-            )
+            skills = str(row.get("skills", "")).strip().split(",")
+            internships = str(row.get("internships", "")).strip().split(",")
 
-    semester_cgpas = [
-        {"semester": row["semester"], "cgpa": row["cgpa"]} for row in rows
-    ]
-    return semester_cgpas
+            if not name or not email or "@" not in email:
+                continue
 
-
-@app.post("/students/{student_id}/cgpa")
-async def add_student_cgpa(student_id: int, data: SemesterCGPA = Body(...)):
-    async with pool.acquire() as conn:
-        try:
-            # Check if student exists
-            student = await conn.fetchrow(
-                "SELECT id FROM students WHERE id = $1", student_id
-            )
-            if not student:
-                raise HTTPException(status_code=404, detail="Student not found")
-
-            # Insert or update semester CGPA
-            await conn.execute(
-                """
-                INSERT INTO semester_cgpa (student_id, semester, cgpa)
-                VALUES ($1, $2, $3)
-                ON CONFLICT (student_id, semester) DO UPDATE SET
-                    cgpa = $3
-                """,
-                student_id,
-                data.semester,
-                data.cgpa,
-            )
-
-            # Update the final_cgpa by calling the PostgreSQL function
-            await conn.execute("SELECT update_student_final_cgpa($1)", student_id)
-        except asyncpg.exceptions.InvalidCachedStatementError:
-            # Clear the statement cache and retry
-            await conn.execute("DEALLOCATE ALL")
-            # Check if student exists
-            student = await conn.fetchrow(
-                "SELECT id FROM students WHERE id = $1", student_id
-            )
-            if not student:
-                raise HTTPException(status_code=404, detail="Student not found")
-
-            # Insert or update semester CGPA
-            await conn.execute(
-                """
-                INSERT INTO semester_cgpa (student_id, semester, cgpa)
-                VALUES ($1, $2, $3)
-                ON CONFLICT (student_id, semester) DO UPDATE SET
-                    cgpa = $3
-                """,
-                student_id,
-                data.semester,
-                data.cgpa,
-            )
-
-            # Update the final_cgpa by calling the PostgreSQL function
-            await conn.execute("SELECT update_student_final_cgpa($1)", student_id)
-
-    return {
-        "status": "updated",
-        "student_id": student_id,
-        "semester": data.semester,
-        "cgpa": data.cgpa,
-    }
-
-
-@app.delete("/students/{student_id}/cgpa/{semester}")
-async def delete_student_cgpa(student_id: int, semester: str):
-    async with pool.acquire() as conn:
-        try:
-            result = await conn.fetchrow(
-                "DELETE FROM semester_cgpa WHERE student_id = $1 AND semester = $2 RETURNING id",
-                student_id,
-                semester,
-            )
-            if not result:
-                raise HTTPException(
-                    status_code=404, detail="Semester CGPA record not found"
+            params.append(
+                (
+                    name,
+                    email,
+                    phone,
+                    json.dumps(skills),
+                    json.dumps(internships),
+                    json.dumps([]),
+                    False,
                 )
-
-            # Update the final_cgpa by calling the PostgreSQL function
-            await conn.execute("SELECT update_student_final_cgpa($1)", student_id)
-        except asyncpg.exceptions.InvalidCachedStatementError:
-            # Clear the statement cache and retry
-            await conn.execute("DEALLOCATE ALL")
-            result = await conn.fetchrow(
-                "DELETE FROM semester_cgpa WHERE student_id = $1 AND semester = $2 RETURNING id",
-                student_id,
-                semester,
             )
-            if not result:
-                raise HTTPException(
-                    status_code=404, detail="Semester CGPA record not found"
-                )
+        except Exception as e:
+            logger.error(f"Error processing row {idx}: {e}")
 
-            # Update the final_cgpa by calling the PostgreSQL function
-            await conn.execute("SELECT update_student_final_cgpa($1)", student_id)
+    query = """
+        INSERT INTO students (name, email, phone, skills, internships, projects, placed)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT(email) DO UPDATE SET
+            name=excluded.name, phone=excluded.phone, skills=excluded.skills,
+            internships=excluded.internships, projects=excluded.projects, placed=excluded.placed
+        WHERE students.name IS DISTINCT FROM excluded.name
+           OR students.phone IS DISTINCT FROM excluded.phone
+           OR students.skills IS DISTINCT FROM excluded.skills
+           OR students.internships IS DISTINCT FROM excluded.internships
+           OR students.projects IS DISTINCT FROM excluded.projects
+           OR students.placed IS DISTINCT FROM excluded.placed
+    """
 
-    return {"status": "deleted", "student_id": student_id, "semester": semester}
+    async with pool.acquire() as conn:
+        await conn.executemany(query, params)
+
+        # Handle CGPA data
+        for idx, row in df.iterrows():
+            try:
+                email = str(row.get("email", "")).strip()
+                if email:
+                    student_id = await conn.fetchval(
+                        "SELECT id FROM students WHERE email=$1", email
+                    )
+                    if student_id:
+                        csv_cgpa = row.get("cgpa") or row.get("final_cgpa")
+                        if pd.notna(csv_cgpa) and csv_cgpa != "":
+                            try:
+                                cgpa_value = float(csv_cgpa)
+                                await conn.execute(
+                                    """INSERT INTO semester_cgpa (student_id, semester, cgpa)
+                                       VALUES ($1, $2, $3)
+                                       ON CONFLICT (student_id, semester) DO UPDATE SET cgpa=$3""",
+                                    student_id,
+                                    "Overall",
+                                    cgpa_value,
+                                )
+                            except ValueError:
+                                pass
+            except Exception as e:
+                logger.error(f"Error processing CGPA for row {idx}: {e}")
+
+    return {"message": "Students updated successfully"}
 
 
 if __name__ == "__main__":

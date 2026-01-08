@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { Search, X, ChevronLeft, ChevronRight } from "lucide-react";
-import { Navigation } from "@/components/navigation";
+import Navigation from "@/components/navigation";
 import { StudentCard } from "@/components/student-card";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
